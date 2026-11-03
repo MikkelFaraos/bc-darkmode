@@ -17,7 +17,7 @@ The overlay does nothing for BC in a browser. Use the Dark Reader extension ther
 Double-click `BCDarkOverlay.exe`. It can be started before or after BC.
 
 - **Ctrl+Alt+D** turns dark mode on or off.
-- The **tray icon** near the clock has a right-click menu to switch between Soft dark and Black, or to exit. Double-click it to turn dark mode on or off.
+- The **tray icon** near the clock has a right-click menu to switch between Soft dark and Black, choose Normal, Vivid or Extra vivid colours, or exit. Double-click it to turn dark mode on or off.
 
 ## Start automatically at login
 
@@ -35,6 +35,7 @@ The program is unsigned, so Windows SmartScreen may warn about it, and Applicati
 ## Known limits
 
 - It is a colour filter, not a real theme, so product images and some status colours look different.
+- Stronger colour settings also strengthen the orange and blue edges ClearType puts on text. Extra vivid shows them the most.
 - BC preview thumbnails in the Alt-Tab screen stay white.
 - It may be slow or not work in Remote Desktop or Citrix sessions.
 - A second monitor has not been tested.

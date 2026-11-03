@@ -53,6 +53,10 @@ namespace BCDarkOverlay
         const int FastInterval = 16;   // about 60 updates a second while BC is on screen
         const int IdleInterval = 250;
         const int MinEventGap = 4;
+        const float NormalSaturation = 1f;
+        // Higher values also strengthen the orange and blue edges ClearType puts on text.
+        const float VividSaturation = 1.25f;
+        const float ExtraVividSaturation = 1.6f;
 
         readonly string targetProcess;
         readonly Dictionary<uint, bool> targetPids = new Dictionary<uint, bool>();
@@ -61,6 +65,9 @@ namespace BCDarkOverlay
         readonly ToolStripMenuItem enabledItem = new ToolStripMenuItem("Dark mode on");
         readonly ToolStripMenuItem softItem = new ToolStripMenuItem("Soft dark");
         readonly ToolStripMenuItem blackItem = new ToolStripMenuItem("Black");
+        readonly ToolStripMenuItem normalColoursItem = new ToolStripMenuItem("Normal colours");
+        readonly ToolStripMenuItem vividColoursItem = new ToolStripMenuItem("Vivid colours");
+        readonly ToolStripMenuItem extraVividColoursItem = new ToolStripMenuItem("Extra vivid colours");
 
         IntPtr magnifier;
         IntPtr lastRegion;
@@ -68,6 +75,8 @@ namespace BCDarkOverlay
         bool enabled = true;
         bool hostVisible;
         bool targetAboveHost;
+        bool softTheme = true;
+        float saturation = VividSaturation;
         bool inTick;
         int tick;
         readonly Stopwatch sinceLastTick = Stopwatch.StartNew();
@@ -84,12 +93,19 @@ namespace BCDarkOverlay
             enabledItem.Click += delegate { SetEnabled(!enabled); };
             softItem.Click += delegate { SetTheme(true); };
             blackItem.Click += delegate { SetTheme(false); };
+            normalColoursItem.Click += delegate { SetSaturation(NormalSaturation); };
+            vividColoursItem.Click += delegate { SetSaturation(VividSaturation); };
+            extraVividColoursItem.Click += delegate { SetSaturation(ExtraVividSaturation); };
 
             var menu = new ContextMenuStrip();
             menu.Items.Add(enabledItem);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(softItem);
             menu.Items.Add(blackItem);
+            menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add(normalColoursItem);
+            menu.Items.Add(vividColoursItem);
+            menu.Items.Add(extraVividColoursItem);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("Exit", null, delegate { Close(); });
 
@@ -136,6 +152,7 @@ namespace BCDarkOverlay
             Native.MagSetWindowFilterList(magnifier, Native.MW_FILTERMODE_EXCLUDE, 1, self);
 
             SetTheme(true);
+            SetSaturation(VividSaturation);
             Native.RegisterHotKey(Handle, HotkeyId, Native.MOD_CONTROL | Native.MOD_ALT, (uint)Keys.D);
 
             windowEventProc = OnWindowEvent;
@@ -178,32 +195,54 @@ namespace BCDarkOverlay
 
         void SetTheme(bool soft)
         {
+            softTheme = soft;
             softItem.Checked = soft;
             blackItem.Checked = !soft;
             enabledItem.Checked = enabled;
+            ApplyEffect();
+        }
+
+        void SetSaturation(float value)
+        {
+            saturation = value;
+            normalColoursItem.Checked = value == NormalSaturation;
+            vividColoursItem.Checked = value == VividSaturation;
+            extraVividColoursItem.Checked = value == ExtraVividSaturation;
+            ApplyEffect();
+        }
+
+        void ApplyEffect()
+        {
             // Soft keeps backgrounds dark grey and text off-white, which is easier on the eyes.
-            var effect = BuildEffect(soft ? 0.12f : 0f, soft ? 0.92f : 1f);
+            var effect = BuildEffect(softTheme ? 0.12f : 0f, softTheme ? 0.92f : 1f, saturation);
             Native.MagSetColorEffect(magnifier, ref effect);
         }
 
         // Inverts brightness and turns hue 180 degrees back, so red stays red and so on.
-        // White maps to `floor`, black maps to `ceiling`.
-        static Native.MAGCOLOREFFECT BuildEffect(float floor, float ceiling)
+        // White maps to `floor`, black maps to `ceiling`. Saturation then strengthens colours
+        // and leaves greys alone, so text and backgrounds keep their brightness.
+        static Native.MAGCOLOREFFECT BuildEffect(float floor, float ceiling, float saturation)
         {
             float s = ceiling - floor;
             float a = 1f / 3f * s;
             float b = -2f / 3f * s;
-            return new Native.MAGCOLOREFFECT
-            {
-                transform = new[]
+            float[,] invert = { { a, b, b }, { b, a, b }, { b, b, a } };
+
+            float[] luma = { 0.2126f, 0.7152f, 0.0722f };
+            var transform = new float[25];
+            for (int row = 0; row < 3; row++)
+                for (int column = 0; column < 3; column++)
                 {
-                    a, b, b, 0, 0,
-                    b, a, b, 0, 0,
-                    b, b, a, 0, 0,
-                    0, 0, 0, 1, 0,
-                    ceiling, ceiling, ceiling, 0, 1
+                    float sum = 0;
+                    for (int i = 0; i < 3; i++)
+                        sum += invert[row, i] * ((1 - saturation) * luma[i] + (i == column ? saturation : 0));
+                    transform[row * 5 + column] = sum;
                 }
-            };
+
+            transform[18] = 1;
+            transform[20] = transform[21] = transform[22] = ceiling;
+            transform[24] = 1;
+            return new Native.MAGCOLOREFFECT { transform = transform };
         }
 
         void Tick()
