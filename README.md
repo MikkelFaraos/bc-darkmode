@@ -2,7 +2,7 @@
 
 Dark mode for the Microsoft Dynamics 365 Business Central Windows client.
 
-Business Central 13 has no dark mode. This small Windows program recolours the BC windows on screen with a click-through overlay. BC itself and the server are not changed.
+Business Central 13 has no dark mode. This small Windows program recolours the BC windows on screen with a click-through overlay. BC's files and data and the server are not changed. The only thing it sets on BC is turning off the minimize and maximize animation on open windows, which ends when each window closes.
 
 ## Requirements
 

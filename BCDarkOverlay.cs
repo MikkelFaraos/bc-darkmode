@@ -60,6 +60,7 @@ namespace BCDarkOverlay
 
         readonly string targetProcess;
         readonly Dictionary<uint, bool> targetPids = new Dictionary<uint, bool>();
+        readonly HashSet<IntPtr> animationsDisabled = new HashSet<IntPtr>();
         readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer();
         readonly NotifyIcon tray = new NotifyIcon();
         readonly ToolStripMenuItem enabledItem = new ToolStripMenuItem("Dark mode on");
@@ -159,6 +160,7 @@ namespace BCDarkOverlay
             Hook(Native.EVENT_SYSTEM_FOREGROUND, Native.EVENT_SYSTEM_FOREGROUND);
             Hook(Native.EVENT_SYSTEM_MINIMIZESTART, Native.EVENT_SYSTEM_MINIMIZEEND);
             Hook(Native.EVENT_OBJECT_SHOW, Native.EVENT_OBJECT_REORDER);
+            Hook(Native.EVENT_OBJECT_LOCATIONCHANGE, Native.EVENT_OBJECT_LOCATIONCHANGE);
 
             timer.Start();
         }
@@ -268,12 +270,22 @@ namespace BCDarkOverlay
             UpdateVirtualScreen();
 
             // Processes change rarely, so only look them up about once a second.
-            if (tick++ % 60 == 0) targetPids.Clear();
+            if (tick++ % 60 == 0)
+            {
+                targetPids.Clear();
+                animationsDisabled.Clear();
+            }
 
             IntPtr region = BuildVisibleRegion();
             bool hasArea = Native.GetRgnBox(region, out _unused) != Native.NULLREGION;
 
-            // Draw before the region changes, so newly uncovered BC areas are never shown stale.
+            bool changed = lastRegion == IntPtr.Zero || !Native.EqualRgn(region, lastRegion);
+
+            // Where BC just went away, stop recolouring first, or whatever was behind it gets
+            // inverted for a frame. Where BC just appeared, draw first so it's never shown stale.
+            bool losesArea = changed && lastRegion != IntPtr.Zero && LosesArea(lastRegion, region);
+            if (losesArea) ApplyRegion(region);
+
             if (hasArea)
             {
                 Native.MagSetWindowSource(magnifier, virtualScreen);
@@ -281,20 +293,8 @@ namespace BCDarkOverlay
                 Native.UpdateWindow(magnifier);
             }
 
-            if (lastRegion != IntPtr.Zero && Native.EqualRgn(region, lastRegion))
-            {
-                Native.DeleteObject(region);
-            }
-            else
-            {
-                if (lastRegion != IntPtr.Zero) Native.DeleteObject(lastRegion);
-                lastRegion = region;
-
-                // SetWindowRgn takes ownership of the region it is given, so hand it a copy.
-                IntPtr copy = Native.CreateRectRgn(0, 0, 0, 0);
-                Native.CombineRgn(copy, region, IntPtr.Zero, Native.RGN_COPY);
-                Native.SetWindowRgn(Handle, copy, true);
-            }
+            if (!changed) Native.DeleteObject(region);
+            else if (!losesArea) ApplyRegion(region);
 
             if (!hasArea)
             {
@@ -310,6 +310,25 @@ namespace BCDarkOverlay
                     Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOACTIVATE);
 
             timer.Interval = FastInterval;
+        }
+
+        static bool LosesArea(IntPtr before, IntPtr after)
+        {
+            IntPtr removed = Native.CreateRectRgn(0, 0, 0, 0);
+            bool loses = Native.CombineRgn(removed, before, after, Native.RGN_DIFF) != Native.NULLREGION;
+            Native.DeleteObject(removed);
+            return loses;
+        }
+
+        void ApplyRegion(IntPtr region)
+        {
+            if (lastRegion != IntPtr.Zero) Native.DeleteObject(lastRegion);
+            lastRegion = region;
+
+            // SetWindowRgn takes ownership of the region it is given, so hand it a copy.
+            IntPtr copy = Native.CreateRectRgn(0, 0, 0, 0);
+            Native.CombineRgn(copy, region, IntPtr.Zero, Native.RGN_COPY);
+            Native.SetWindowRgn(Handle, copy, true);
         }
 
         // Runs when any window appears, hides, moves in the stack or takes focus, so the overlay
@@ -370,6 +389,7 @@ namespace BCDarkOverlay
                 if (IsTarget(hwnd))
                 {
                     if (!passedHost) targetAboveHost = true;
+                    DisableAnimations(hwnd);
                     Native.CombineRgn(scratch, windowRgn, covered, Native.RGN_DIFF);
                     Native.CombineRgn(result, result, scratch, Native.RGN_OR);
                 }
@@ -412,6 +432,15 @@ namespace BCDarkOverlay
                     && (flags & Native.LWA_ALPHA) != 0 && alpha == 0) return false;
             }
             return true;
+        }
+
+        // While Windows animates a minimize or maximize, the window is drawn outside its real
+        // position, so the overlay can't cover it. The setting ends when the window closes.
+        void DisableAnimations(IntPtr hwnd)
+        {
+            if (!animationsDisabled.Add(hwnd)) return;
+            int disabled = 1;
+            Native.DwmSetWindowAttribute(hwnd, Native.DWMWA_TRANSITIONS_FORCEDISABLED, ref disabled, sizeof(int));
         }
 
         bool IsTarget(IntPtr hwnd)
@@ -470,11 +499,11 @@ namespace BCDarkOverlay
         public const uint SWP_NOSIZE = 0x0001, SWP_NOMOVE = 0x0002, SWP_NOZORDER = 0x0004, SWP_NOACTIVATE = 0x0010, SWP_SHOWWINDOW = 0x0040;
         public const int SW_HIDE = 0;
         public static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
-        public const int DWMWA_EXTENDED_FRAME_BOUNDS = 9, DWMWA_CLOAKED = 14;
+        public const int DWMWA_TRANSITIONS_FORCEDISABLED = 3, DWMWA_EXTENDED_FRAME_BOUNDS = 9, DWMWA_CLOAKED = 14;
         public const int RGN_OR = 2, RGN_DIFF = 4, RGN_COPY = 5;
         public const int NULLREGION = 1;
         public const uint EVENT_SYSTEM_FOREGROUND = 0x0003, EVENT_SYSTEM_MINIMIZESTART = 0x0016, EVENT_SYSTEM_MINIMIZEEND = 0x0017;
-        public const uint EVENT_OBJECT_SHOW = 0x8002, EVENT_OBJECT_REORDER = 0x8004;
+        public const uint EVENT_OBJECT_SHOW = 0x8002, EVENT_OBJECT_REORDER = 0x8004, EVENT_OBJECT_LOCATIONCHANGE = 0x800B;
         public const uint WINEVENT_OUTOFCONTEXT = 0, WINEVENT_SKIPOWNPROCESS = 2;
         public const int OBJID_WINDOW = 0;
 
@@ -523,6 +552,7 @@ namespace BCDarkOverlay
 
         [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr hwnd, int attribute, out RECT value, int size);
         [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr hwnd, int attribute, out int value, int size);
+        [DllImport("dwmapi.dll")] public static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
 
         [DllImport("gdi32.dll")] public static extern IntPtr CreateRectRgn(int left, int top, int right, int bottom);
         [DllImport("gdi32.dll")] public static extern int CombineRgn(IntPtr dest, IntPtr a, IntPtr b, int mode);
